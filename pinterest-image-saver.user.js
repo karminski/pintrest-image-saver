@@ -39,6 +39,7 @@
     let imageIdSet = new Set(); // Add: persistent set to track loaded image IDs
     let scrollTimer = null; // Add: timer for scroll debounce
     let selectionOverlays = new Map(); // Map to track selection overlays
+    let concurrentLimit = 10; // Concurrent download limit
 
     // Simple hash function
     function simpleHash(str) {
@@ -116,6 +117,46 @@
         });
     }
 
+    // Concurrent download controller
+    async function concurrentDownload(tasks, limit, onProgress) {
+        let completed = 0;
+        let failed = 0;
+        let currentIndex = 0;
+        const total = tasks.length;
+        
+        // Execute task
+        async function executeTask() {
+            while (currentIndex < total) {
+                const taskIndex = currentIndex++;
+                const task = tasks[taskIndex];
+                
+                try {
+                    await task();
+                    completed++;
+                } catch (error) {
+                    failed++;
+                    console.error(`[Pinterest Saver] Task ${taskIndex + 1} failed:`, error);
+                }
+                
+                // Update progress
+                if (onProgress) {
+                    onProgress(completed + failed, total, completed, failed);
+                }
+            }
+        }
+        
+        // Create worker pool
+        const workers = [];
+        for (let i = 0; i < limit; i++) {
+            workers.push(executeTask());
+        }
+        
+        // Wait for all workers to complete
+        await Promise.all(workers);
+        
+        return { completed, failed };
+    }
+
     // Download all images
     async function downloadAll() {
         if (allImages.length === 0) {
@@ -123,38 +164,29 @@
             return;
         }
 
-        console.log(`[Pinterest Saver] 🚀 Starting direct download of ${allImages.length} images...`);
-        alert(`Starting download of ${allImages.length} images.\nFiles will be downloaded individually.\nThis may trigger multiple download prompts.`);
+        console.log(`[Pinterest Saver] 🚀 Starting concurrent download of ${allImages.length} images (concurrent limit: ${concurrentLimit})...`);
+        alert(`Starting download of ${allImages.length} images.\nConcurrent downloads: ${concurrentLimit}\nFiles will be downloaded individually.`);
 
-        let completed = 0;
-        let failed = 0;
-
-        for (let i = 0; i < allImages.length; i++) {
-            const imgData = allImages[i];
-            updateProgress(i + 1, allImages.length, `Downloading ${i + 1}/${allImages.length}...`);
-
-            // Download thumbnail
-            try {
+        // Create download tasks (both thumbnail and original for each image)
+        const tasks = [];
+        allImages.forEach(imgData => {
+            // Thumbnail download task
+            tasks.push(async () => {
                 await directDownload(imgData.thumbnailUrl, imgData.filename, 'thumb');
-                completed++;
-            } catch (e) {
-                failed++;
-            }
-
-            await new Promise(resolve => setTimeout(resolve, 300)); // Delay
-
-            // Download original
-            try {
+            });
+            
+            // Original download task
+            tasks.push(async () => {
                 await directDownload(imgData.originalUrl, imgData.filename, 'orig');
-                completed++;
-            } catch (e) {
-                failed++;
-            }
+            });
+        });
 
-            await new Promise(resolve => setTimeout(resolve, 300));
-        }
+        // Execute concurrent downloads
+        const result = await concurrentDownload(tasks, concurrentLimit, (current, total, completed, failed) => {
+            updateProgress(current, total, `Downloading ${current}/${total}... (Success: ${completed}, Failed: ${failed})`);
+        });
 
-        alert(`Download complete!\nSuccessful: ${completed}\nFailed: ${failed}`);
+        alert(`Download complete!\nSuccessful: ${result.completed}\nFailed: ${result.failed}`);
         updateProgress(0, 0, 'Complete');
     }
 
@@ -166,38 +198,29 @@
         }
 
         const imagesToDownload = allImages.filter(img => selectedImages.has(img.id));
-        console.log(`[Pinterest Saver] 🚀 Starting download of ${imagesToDownload.length} selected images...`);
-        alert(`Starting download of ${imagesToDownload.length} selected images.\nFiles will be downloaded individually.`);
+        console.log(`[Pinterest Saver] 🚀 Starting concurrent download of ${imagesToDownload.length} selected images (concurrent limit: ${concurrentLimit})...`);
+        alert(`Starting download of ${imagesToDownload.length} selected images.\nConcurrent downloads: ${concurrentLimit}\nFiles will be downloaded individually.`);
 
-        let completed = 0;
-        let failed = 0;
-
-        for (let i = 0; i < imagesToDownload.length; i++) {
-            const imgData = imagesToDownload[i];
-            updateProgress(i + 1, imagesToDownload.length, `Downloading ${i + 1}/${imagesToDownload.length}...`);
-
-            // Download thumbnail
-            try {
+        // Create download tasks (both thumbnail and original for each image)
+        const tasks = [];
+        imagesToDownload.forEach(imgData => {
+            // Thumbnail download task
+            tasks.push(async () => {
                 await directDownload(imgData.thumbnailUrl, imgData.filename, 'thumb');
-                completed++;
-            } catch (e) {
-                failed++;
-            }
-
-            await new Promise(resolve => setTimeout(resolve, 300));
-
-            // Download original
-            try {
+            });
+            
+            // Original download task
+            tasks.push(async () => {
                 await directDownload(imgData.originalUrl, imgData.filename, 'orig');
-                completed++;
-            } catch (e) {
-                failed++;
-            }
+            });
+        });
 
-            await new Promise(resolve => setTimeout(resolve, 300));
-        }
+        // Execute concurrent downloads
+        const result = await concurrentDownload(tasks, concurrentLimit, (current, total, completed, failed) => {
+            updateProgress(current, total, `Downloading ${current}/${total}... (Success: ${completed}, Failed: ${failed})`);
+        });
 
-        alert(`Download complete!\nSuccessful: ${completed}\nFailed: ${failed}`);
+        alert(`Download complete!\nSuccessful: ${result.completed}\nFailed: ${result.failed}`);
         updateProgress(0, 0, 'Complete');
         exitSelectionMode();
     }
